@@ -876,6 +876,26 @@ Chart.defaults.color='#777';
   }
 })();
 
+
+// Expose all functions to global scope (needed for type="module")
+window.doLogin = doLogin;
+window.doLogout = doLogout;
+window.showScreen = showScreen;
+window.startReport = startReport;
+window.calcSummary = calcSummary;
+window.saveReport = saveReport;
+window.editReport = editReport;
+window.promptDelete = promptDelete;
+window.closeDelModal = closeDelModal;
+window.confirmDelete = confirmDelete;
+window.genWhatsApp = genWhatsApp;
+window.showWAForReport = showWAForReport;
+window.closeWA = closeWA;
+window.copyWA = copyWA;
+window.openWA = openWA;
+window.setDashPeriod = setDashPeriod;
+window.renderHistory = renderHistory;
+window.saveUserCreds = saveUserCreds;
 </script>
 
 <!-- ADMIN PANEL -->
