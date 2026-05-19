@@ -412,7 +412,27 @@ input[readonly]{color:var(--gold-light);border-color:rgba(212,160,23,.25);backgr
   </div>
 </div>
 
-<script>
+<script type="module">
+// =================== FIREBASE CONFIG ===================
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js";
+import { getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBZEUG37Btkz_FvDm1CkjLZz1ppktRG7uU",
+  authDomain: "relatorio-matriculas.firebaseapp.com",
+  projectId: "relatorio-matriculas",
+  storageBucket: "relatorio-matriculas.firebasestorage.app",
+  messagingSenderId: "982922978961",
+  appId: "1:982922978961:web:e78b6585baa9fe8914c130",
+  measurementId: "G-S409ZV2795"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp);
+const REPORTS_COLLECTION = 'reports';
+const USERS_COLLECTION = 'users';
+
+// =================== END FIREBASE CONFIG ===================
 
 // =================== AUTH SYSTEM ===================
 const AUTH_KEY = 'danpri_auth';
@@ -536,9 +556,57 @@ let editId=null,deleteId=null,dashPeriod='all';
 let chartC=null,chartU=null,chartConv=null;
 let currentConsultant='',currentDate='';
 
-function loadData(){try{reports=JSON.parse(localStorage.getItem(STORE_KEY)||'[]')}catch(e){reports=[]}}
-function saveData(){localStorage.setItem(STORE_KEY,JSON.stringify(reports))}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).substr(2)}
+
+// Firebase: load all reports
+async function loadData(){
+  try{
+    const q = query(collection(db, REPORTS_COLLECTION), orderBy('date','desc'));
+    const snap = await getDocs(q);
+    reports = snap.docs.map(d=>({...d.data(), id:d.id}));
+  }catch(e){
+    console.error('Error loading data:', e);
+    reports=[];
+  }
+}
+
+// Firebase: save new report
+async function saveToFirebase(data){
+  try{
+    if(editId){
+      const ref = doc(db, REPORTS_COLLECTION, editId);
+      await updateDoc(ref, data);
+    } else {
+      await addDoc(collection(db, REPORTS_COLLECTION), data);
+    }
+    return true;
+  }catch(e){
+    console.error('Error saving:', e);
+    return false;
+  }
+}
+
+// Firebase: delete report
+async function deleteFromFirebase(id){
+  try{
+    await deleteDoc(doc(db, REPORTS_COLLECTION, id));
+    return true;
+  }catch(e){
+    console.error('Error deleting:', e);
+    return false;
+  }
+}
+
+// Firebase: save users
+async function saveUsersToFirebase(users){
+  try{
+    const ref = doc(db, USERS_COLLECTION, 'all');
+    await updateDoc(ref, {users});
+  }catch(e){
+    // Doc might not exist, create it
+    try{ await addDoc(collection(db, USERS_COLLECTION), {users}); }catch(e2){}
+  }
+}
 
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
@@ -547,13 +615,13 @@ function showScreen(id){
   const map={home:0,history:1,dashboard:2};
   document.querySelectorAll('.nav-btn')[map[id]]?.classList.add('active');
   if(id==='history')renderHistoryFiltered();
-  if(id==='dashboard')renderDashboard();
-  if(id==='admin')renderAdminPanel();
+  else if(id==='dashboard')renderDashboard();
+  else if(id==='admin')renderAdminPanel();
   window.scrollTo(0,0);
 }
 
-function renderHistoryFiltered(){
-  loadData();
+async function renderHistoryFiltered(){
+  await loadData();
   const user=getCurrentUser();
   // filter reports for consultant
   if(user && user.role==='consultant'){
@@ -622,18 +690,29 @@ function calcSummary(){
 function getFormData(){
   const fr={mat:getNum('fr-mat'),val:getNum('fr-val'),lr:getNum('fr-lr'),la:getNum('fr-la'),ind:getNum('fr-ind'),bal:getNum('fr-bal')};
   const fm={mat:getNum('fm-mat'),val:getNum('fm-val'),lr:getNum('fm-lr'),la:getNum('fm-la'),ind:getNum('fm-ind'),bal:getNum('fm-bal')};
-  return{id:editId||uid(),consultant:currentConsultant,date:currentDate,franco:fr,morato:fm,
-    summary:{mat:fr.mat+fm.mat,val:fr.val+fm.val,lr:fr.lr+fm.lr,la:fr.la+fm.la,ind:fr.ind+fm.ind,bal:fr.bal+fm.bal}};
+  return{
+    id:editId||uid(),
+    consultant:currentConsultant,
+    date:currentDate,
+    franco:fr,
+    morato:fm,
+    summary:{mat:fr.mat+fm.mat,val:fr.val+fm.val,lr:fr.lr+fm.lr,la:fr.la+fm.la,ind:fr.ind+fm.ind,bal:fr.bal+fm.bal},
+    createdAt: new Date().toISOString()
+  };
 }
 
-function saveReport(){
+async function saveReport(){
   const data=getFormData();
-  if(editId){const idx=reports.findIndex(r=>r.id===editId);if(idx>-1)reports[idx]=data;}
-  else reports.push(data);
-  saveData();
-  showToast(editId?'Relatório atualizado! ✅':'Relatório salvo! ✅');
-  editId=null;
-  setTimeout(()=>showScreen('home'),900);
+  const {id, ...dataWithoutId} = data;
+  showToast('Salvando... ⏳');
+  const ok = await saveToFirebase(dataWithoutId);
+  if(ok){
+    showToast(editId?'Relatório atualizado! ✅':'Relatório salvo! ✅');
+    editId=null;
+    setTimeout(()=>showScreen('home'),900);
+  } else {
+    showToast('Erro ao salvar! Tente novamente.');
+  }
 }
 
 function editReport(id){
@@ -654,10 +733,20 @@ function editReport(id){
 
 function promptDelete(id){deleteId=id;document.getElementById('del-modal').classList.add('open')}
 function closeDelModal(){document.getElementById('del-modal').classList.remove('open');deleteId=null}
-function confirmDelete(){reports=reports.filter(r=>r.id!==deleteId);saveData();closeDelModal();renderHistory();showToast('Excluído!')}
+async function confirmDelete(){
+  const ok = await deleteFromFirebase(deleteId);
+  if(ok){
+    closeDelModal();
+    await loadData();
+    renderHistory();
+    showToast('Excluído!');
+  } else {
+    showToast('Erro ao excluir!');
+  }
+}
 
-function renderHistory(){
-  loadData();
+async function renderHistory(){
+  await loadData();
   const fc=document.getElementById('filt-consultant').value;
   const fm=document.getElementById('filt-month').value;
   let list=reports.filter(r=>{
@@ -733,8 +822,8 @@ function filterByPeriod(list){
 }
 function setDashPeriod(p,btn){dashPeriod=p;document.querySelectorAll('.period-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderDashboard()}
 
-function renderDashboard(){
-  loadData();
+async function renderDashboard(){
+  await loadData();
   const user=getCurrentUser();
   const allReports = user && user.role==='consultant' ? reports.filter(r=>r.consultant===user.name) : reports;
   const list=filterByPeriod(allReports);
@@ -772,12 +861,11 @@ function renderDashboard(){
 
 function showToast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
 
-loadData();
 document.getElementById('home-date').value=today();
 Chart.defaults.color='#777';
 
 // AUTH INIT
-(function(){
+(async function(){
   // Hide topbar until logged in
   const user = getCurrentUser();
   if(!user){
