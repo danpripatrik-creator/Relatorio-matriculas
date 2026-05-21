@@ -737,7 +737,7 @@ async function renderAdminReports() {
 }
 
 // ===== EVENT LISTENERS =====
-document.addEventListener('DOMContentLoaded', ()=>{
+document.addEventListener('DOMContentLoaded', async ()=>{
   Chart.defaults.color='#777';
   document.getElementById('home-date').value=today();
 
@@ -802,17 +802,9 @@ document.addEventListener('DOMContentLoaded', ()=>{
   // Auth check
   const user = getCurrentUser();
   if(user){
-    // Test Firebase connection first
-    try {
-      const testSnap = await getDocs(query(collection(db,'reports')));
-      document.getElementById('login-screen').style.display='none';
-      document.getElementById('topbar').style.display='';
-      initApp(user);
-    } catch(e) {
-      // Firebase failed - clear session and show login
-      clearCurrentUser();
-      console.log('Firebase connection failed, showing login');
-    }
+    document.getElementById('login-screen').style.display='none';
+    document.getElementById('topbar').style.display='';
+    initApp(user);
   }
 });
 </script>
