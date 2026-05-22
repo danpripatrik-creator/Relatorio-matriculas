@@ -285,6 +285,7 @@ body{background:var(--black);color:var(--white);font-family:'DM Sans',sans-serif
     <div class="chart-card"><div class="chart-title">Valor Vendido por Unidade</div><div class="chart-wrap"><canvas id="ch-uni"></canvas></div></div>
     <div class="chart-card"><div class="chart-title">Ranking de Consultoras</div><div id="ranking"></div></div>
     <div class="chart-card"><div class="chart-title">Taxa de Conversão</div><div class="chart-wrap"><canvas id="ch-conv"></canvas></div></div>
+  <div id="cons-breakdown" style="padding:0 0 14px"></div>
   </div>
 
   <!-- ADMIN -->
@@ -359,10 +360,87 @@ function getSession() { try { return JSON.parse(sessionStorage.getItem(SESSION_K
 function setSession(u) { sessionStorage.setItem(SESSION_KEY, JSON.stringify(u)); }
 function clearSession() { sessionStorage.removeItem(SESSION_KEY); }
 
+// ============ FIREBASE ============
+let db = null;
+const FB_CONFIG = {
+  apiKey: "AIzaSyBZEUG37Btkz_FvDm1CkjLZz1ppktRG7uU",
+  authDomain: "relatorio-matriculas.firebaseapp.com",
+  projectId: "relatorio-matriculas",
+  storageBucket: "relatorio-matriculas.firebasestorage.app",
+  messagingSenderId: "982922978961",
+  appId: "1:982922978961:web:e78b6585baa9fe8914c130"
+};
+
+async function initFirebase() {
+  try {
+    const { initializeApp } = await import('https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js');
+    const { getFirestore, collection, getDocs, addDoc, doc, updateDoc, deleteDoc, query, orderBy } = await import('https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js');
+    db = getFirestore(initializeApp(FB_CONFIG));
+    window._fs = { collection, getDocs, addDoc, doc, updateDoc, deleteDoc, query, orderBy };
+    console.log('✅ Firebase conectado!');
+    return true;
+  } catch(e) {
+    console.log('⚠️ Firebase indisponível, usando localStorage');
+    return false;
+  }
+}
+
 // ============ DATA ============
 function loadReports() { try { return JSON.parse(localStorage.getItem(REPORTS_KEY) || '[]'); } catch(e) { return []; } }
 function saveReports(rs) { localStorage.setItem(REPORTS_KEY, JSON.stringify(rs)); }
-function loadData() { reports = loadReports(); }
+
+async function loadData() {
+  if (db) {
+    try {
+      const fs = window._fs;
+      const q = fs.query(fs.collection(db, 'reports'), fs.orderBy('date', 'desc'));
+      const snap = await fs.getDocs(q);
+      reports = snap.docs.map(d => ({...d.data(), id: d.id}));
+      // Also sync to localStorage as cache
+      saveReports(reports);
+      return;
+    } catch(e) { console.log('Firebase read error:', e); }
+  }
+  reports = loadReports();
+}
+
+async function saveReportDB(data, id) {
+  if (db) {
+    try {
+      const fs = window._fs;
+      if (id) {
+        await fs.updateDoc(fs.doc(db, 'reports', id), data);
+      } else {
+        const ref = await fs.addDoc(fs.collection(db, 'reports'), data);
+        return ref.id;
+      }
+      return id;
+    } catch(e) { console.log('Firebase write error:', e); }
+  }
+  // localStorage fallback
+  const rs = loadReports();
+  if (id) {
+    const i = rs.findIndex(r=>r.id===id);
+    if(i>-1) rs[i] = {...data, id};
+    else rs.push({...data, id});
+  } else {
+    id = uid();
+    rs.push({...data, id});
+  }
+  saveReports(rs);
+  return id;
+}
+
+async function deleteReportDB(id) {
+  if (db) {
+    try {
+      const fs = window._fs;
+      await fs.deleteDoc(fs.doc(db, 'reports', id));
+      return;
+    } catch(e) { console.log('Firebase delete error:', e); }
+  }
+  saveReports(loadReports().filter(r=>r.id!==id));
+}
 
 // ============ HELPERS ============
 function gid(id) { return document.getElementById(id); }
@@ -455,18 +533,18 @@ function getFormData() {
   return {id:editId||uid(), consultant:curConsultant, date:curDate, franco:fr, morato:fm,
     summary:{mat:fr.mat+fm.mat,val:fr.val+fm.val,lr:fr.lr+fm.lr,la:fr.la+fm.la,ind:fr.ind+fm.ind,bal:fr.bal+fm.bal}};
 }
-function saveReport() {
+async function saveReport() {
   const data = getFormData();
-  const rs = loadReports();
-  if(editId) { const i = rs.findIndex(r=>r.id===editId); if(i>-1) rs[i]=data; else rs.push(data); }
-  else { rs.push(data); }
-  saveReports(rs); reports = rs;
+  const {id, ...dataNoId} = data;
+  toast('Salvando... ⏳');
+  const savedId = await saveReportDB(dataNoId, editId || null);
+  await loadData();
   toast(editId ? 'Atualizado! ✅' : 'Salvo! ✅');
   editId = null;
   setTimeout(()=>showScreen('home'), 800);
 }
-function editReport(id) {
-  loadData();
+async function editReport(id) {
+  await loadData();
   const r = reports.find(r=>r.id===id); if(!r) return;
   editId=id; curConsultant=r.consultant; curDate=r.date;
   gid('f-badge').textContent = r.consultant[0].toUpperCase();
@@ -481,17 +559,17 @@ function editReport(id) {
 
 // ============ DELETE ============
 function promptDelete(id) { deleteId=id; gid('del-modal').classList.add('open'); }
-function confirmDelete() {
-  const rs = loadReports().filter(r=>r.id!==deleteId);
-  saveReports(rs); reports=rs;
+async function confirmDelete() {
+  await deleteReportDB(deleteId);
+  await loadData();
   gid('del-modal').classList.remove('open');
-  toast('Excluído!'); renderHistory();
+  toast('Excluído!'); renderHistList();
   deleteId=null;
 }
 
 // ============ HISTORY ============
-function renderHistory() {
-  loadData();
+async function renderHistory() {
+  await loadData();
   const user = getSession();
   const fc = gid('hf-cons');
   if(user && user.role==='consultant') { fc.value=user.name; fc.disabled=true; }
@@ -590,8 +668,8 @@ function filterPeriod(list) {
   if(dashPeriod==='week'){const d=new Date(now);d.setDate(d.getDate()-7);return list.filter(r=>r.date>=d.toISOString().split('T')[0]);}
   return list;
 }
-function renderDashboard() {
-  loadData();
+async function renderDashboard() {
+  await loadData();
   const user = getSession();
   const all = user && user.role==='consultant' ? reports.filter(r=>r.consultant===user.name) : reports;
   const list = filterPeriod(all);
@@ -609,25 +687,72 @@ function renderDashboard() {
   const laFr=list.reduce((s,r)=>s+(r.franco?.la||0),0);
   const laFm=list.reduce((s,r)=>s+(r.morato?.la||0),0);
   const conv=totLr>0?((totMat/totLr)*100).toFixed(1):0;
+  // Per consultant stats
+  const consStats = cons.map((c,i) => {
+    const sub = list.filter(r=>r.consultant===c);
+    return {
+      name: c,
+      mat: sub.reduce((s,r)=>s+(r.summary?.mat||0),0),
+      val: sub.reduce((s,r)=>s+(r.summary?.val||0),0),
+      lr: sub.reduce((s,r)=>s+(r.summary?.lr||0),0),
+      la: sub.reduce((s,r)=>s+(r.summary?.la||0),0),
+      matFr: sub.reduce((s,r)=>s+(r.franco?.mat||0),0),
+      valFr: sub.reduce((s,r)=>s+(r.franco?.val||0),0),
+      matFm: sub.reduce((s,r)=>s+(r.morato?.mat||0),0),
+      valFm: sub.reduce((s,r)=>s+(r.morato?.val||0),0),
+    };
+  });
+
   gid('kgrid').innerHTML=`
-    <div class="kpi"><div class="kpi-val">${totMat}</div><div class="kpi-lbl">Matrículas</div></div>
+    <div class="kpi"><div class="kpi-val">${totMat}</div><div class="kpi-lbl">Total Matrículas</div></div>
     <div class="kpi"><div class="kpi-val">R$${Math.round(totVal).toLocaleString('pt-BR')}</div><div class="kpi-lbl">Valor Total</div></div>
-    <div class="kpi"><div class="kpi-val">${totLr}</div><div class="kpi-lbl">Leads</div></div>
+    <div class="kpi"><div class="kpi-val">${totLr}</div><div class="kpi-lbl">Total Leads</div></div>
     <div class="kpi"><div class="kpi-val">${conv}%</div><div class="kpi-lbl">Conversão</div></div>
-    <div class="kpi" style="border-top:2px solid var(--gold)">
-      <div style="font-size:9px;color:var(--gold);text-transform:uppercase;margin-bottom:6px">📍 Franco</div>
+    <div class="kpi" style="border-top:2px solid var(--gold);grid-column:span 1">
+      <div style="font-size:9px;color:var(--gold);text-transform:uppercase;margin-bottom:6px">📍 Franco da Rocha</div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:2px">Mat: <b style="color:var(--gold-light)">${matFr}</b></div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:2px">R$: <b style="color:var(--gold-light)">${Math.round(valFr).toLocaleString('pt-BR')}</b></div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:2px">Leads: <b style="color:var(--gold-light)">${lrFr}</b></div>
-      <div style="font-size:11px;color:var(--muted)">Ant: <b style="color:var(--gold-light)">${laFr}</b></div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:2px">Leads Hoje: <b style="color:var(--gold-light)">${lrFr}</b></div>
+      <div style="font-size:11px;color:var(--muted)">Leads Ant: <b style="color:var(--gold-light)">${laFr}</b></div>
     </div>
-    <div class="kpi" style="border-top:2px solid var(--blue)">
-      <div style="font-size:9px;color:var(--blue);text-transform:uppercase;margin-bottom:6px">📍 Morato</div>
+    <div class="kpi" style="border-top:2px solid var(--blue);grid-column:span 1">
+      <div style="font-size:9px;color:var(--blue);text-transform:uppercase;margin-bottom:6px">📍 Francisco Morato</div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:2px">Mat: <b style="color:var(--blue)">${matFm}</b></div>
       <div style="font-size:11px;color:var(--muted);margin-bottom:2px">R$: <b style="color:var(--blue)">${Math.round(valFm).toLocaleString('pt-BR')}</b></div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:2px">Leads: <b style="color:var(--blue)">${lrFm}</b></div>
-      <div style="font-size:11px;color:var(--muted)">Ant: <b style="color:var(--blue)">${laFm}</b></div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:2px">Leads Hoje: <b style="color:var(--blue)">${lrFm}</b></div>
+      <div style="font-size:11px;color:var(--muted)">Leads Ant: <b style="color:var(--blue)">${laFm}</b></div>
     </div>`;
+
+  // Per consultant breakdown (full width)
+  const consEl = document.getElementById('cons-breakdown');
+  if(consEl) {
+    consEl.innerHTML = `
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:18px;color:var(--gold-light);margin-bottom:10px;letter-spacing:1px">👩‍💼 Por Consultora</div>
+      ${consStats.map(c=>`
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:10px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div style="font-weight:600;font-size:14px">${c.name}</div>
+            <div style="font-family:'Bebas Neue',sans-serif;font-size:20px;color:var(--gold-light)">${c.mat} mat</div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div style="background:rgba(212,160,23,.08);border:1px solid rgba(212,160,23,.15);border-radius:8px;padding:9px">
+              <div style="font-size:9px;color:var(--gold);text-transform:uppercase;margin-bottom:5px">Franco</div>
+              <div style="font-size:11px;color:var(--muted)">Mat: <b style="color:var(--gold-light)">${c.matFr}</b></div>
+              <div style="font-size:11px;color:var(--muted)">R$: <b style="color:var(--gold-light)">${Math.round(c.valFr).toLocaleString('pt-BR')}</b></div>
+            </div>
+            <div style="background:rgba(74,158,232,.08);border:1px solid rgba(74,158,232,.15);border-radius:8px;padding:9px">
+              <div style="font-size:9px;color:var(--blue);text-transform:uppercase;margin-bottom:5px">Morato</div>
+              <div style="font-size:11px;color:var(--muted)">Mat: <b style="color:var(--blue)">${c.matFm}</b></div>
+              <div style="font-size:11px;color:var(--muted)">R$: <b style="color:var(--blue)">${Math.round(c.valFm).toLocaleString('pt-BR')}</b></div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:8px;text-align:center;background:var(--surface2);border-radius:8px;padding:8px">
+            <div><div style="font-family:'Bebas Neue',sans-serif;font-size:18px;color:var(--white)">${c.mat}</div><div style="font-size:9px;color:var(--muted)">Matrículas</div></div>
+            <div><div style="font-size:12px;font-weight:600;color:var(--white);padding-top:2px">R$${Math.round(c.val).toLocaleString('pt-BR')}</div><div style="font-size:9px;color:var(--muted)">Vendido</div></div>
+            <div><div style="font-family:'Bebas Neue',sans-serif;font-size:18px;color:var(--white)">${c.lr}</div><div style="font-size:9px;color:var(--muted)">Leads</div></div>
+          </div>
+        </div>`).join('')}`;
+  }
   const gold='#D4A017',blue='#4A9EE8';
   const matByC=cons.map(c=>list.filter(r=>r.consultant===c).reduce((s,r)=>s+(r.summary?.mat||0),0));
   const valByC=cons.map(c=>list.filter(r=>r.consultant===c).reduce((s,r)=>s+(r.summary?.val||0),0));
@@ -670,8 +795,8 @@ function saveUser(idx, name) {
   if(!newU||!newP){toast('Preencha os campos!');return;}
   if(i>-1){users[i].u=newU;users[i].p=newP;saveUsers(users);toast('Salvo! ✅');}
 }
-function renderAdminReps() {
-  loadData();
+async function renderAdminReps() {
+  await loadData();
   const fc = gid('af-cons').value;
   const fm = gid('af-month').value;
   let list = reports.filter(r=>{
@@ -762,13 +887,15 @@ window.addEventListener('DOMContentLoaded', () => {
   gid('btn-no-del').addEventListener('click', () => gid('del-modal').classList.remove('open'));
   gid('btn-yes-del').addEventListener('click', confirmDelete);
 
-  // Check session
-  const user = getSession();
-  if(user) {
-    gid('login-screen').style.display = 'none';
-    gid('app').style.display = 'block';
-    initApp(user);
-  }
+  // Init Firebase then check session
+  initFirebase().then(() => {
+    const user = getSession();
+    if(user) {
+      gid('login-screen').style.display = 'none';
+      gid('app').style.display = 'block';
+      initApp(user);
+    }
+  });
 });
 </script>
 </body>
