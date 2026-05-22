@@ -530,11 +530,22 @@ function calcSummary() {
 function getFormData() {
   const fr = {mat:gnum('fr-mat'),val:gnum('fr-val'),lr:gnum('fr-lr'),la:gnum('fr-la'),ind:gnum('fr-ind'),bal:gnum('fr-bal')};
   const fm = {mat:gnum('fm-mat'),val:gnum('fm-val'),lr:gnum('fm-lr'),la:gnum('fm-la'),ind:gnum('fm-ind'),bal:gnum('fm-bal')};
-  return {id:editId||uid(), consultant:curConsultant, date:curDate, franco:fr, morato:fm,
-    summary:{mat:fr.mat+fm.mat,val:fr.val+fm.val,lr:fr.lr+fm.lr,la:fr.la+fm.la,ind:fr.ind+fm.ind,bal:fr.bal+fm.bal}};
+  // Always use curConsultant which is set when starting/editing a report
+  const consultoraNome = curConsultant;
+  if(!consultoraNome) { toast('Erro: consultora não identificada!'); return null; }
+  return {
+    id: editId||uid(),
+    consultant: consultoraNome,
+    consultoraNome: consultoraNome, // extra field for safety
+    date: curDate,
+    franco: fr,
+    morato: fm,
+    summary: {mat:fr.mat+fm.mat,val:fr.val+fm.val,lr:fr.lr+fm.lr,la:fr.la+fm.la,ind:fr.ind+fm.ind,bal:fr.bal+fm.bal}
+  };
 }
 async function saveReport() {
   const data = getFormData();
+  if(!data) return;
   const {id, ...dataNoId} = data;
   toast('Salvando... ⏳');
   const savedId = await saveReportDB(dataNoId, editId || null);
@@ -569,19 +580,19 @@ async function confirmDelete() {
 
 // ============ HISTORY ============
 async function renderHistory() {
-  await loadData();
   const user = getSession();
   const fc = gid('hf-cons');
   if(user && user.role==='consultant') { fc.value=user.name; fc.disabled=true; }
   else fc.disabled=false;
-  renderHistList();
+  await renderHistList();
 }
-function renderHistList() {
-  loadData();
+async function renderHistList() {
+  await loadData();
   const user = getSession();
   const fc = gid('hf-cons').value;
   const fm = gid('hf-month').value;
   let list = reports.filter(r=>{
+    if(!r.consultant) return false;
     if(user && user.role==='consultant' && r.consultant!==user.name) return false;
     if(fc && r.consultant!==fc) return false;
     if(fm && !r.date.startsWith(fm)) return false;
@@ -689,7 +700,7 @@ async function renderDashboard() {
   const conv=totLr>0?((totMat/totLr)*100).toFixed(1):0;
   // Per consultant stats
   const consStats = cons.map((c,i) => {
-    const sub = list.filter(r=>r.consultant===c);
+    const sub = list.filter(r=>(r.consultant===c || r.consultoraNome===c));
     return {
       name: c,
       mat: sub.reduce((s,r)=>s+(r.summary?.mat||0),0),
@@ -754,8 +765,8 @@ async function renderDashboard() {
         </div>`).join('')}`;
   }
   const gold='#D4A017',blue='#4A9EE8';
-  const matByC=cons.map(c=>list.filter(r=>r.consultant===c).reduce((s,r)=>s+(r.summary?.mat||0),0));
-  const valByC=cons.map(c=>list.filter(r=>r.consultant===c).reduce((s,r)=>s+(r.summary?.val||0),0));
+  const matByC=cons.map(c=>list.filter(r=>(r.consultant===c||r.consultoraNome===c)).reduce((s,r)=>s+(r.summary?.mat||0),0));
+  const valByC=cons.map(c=>list.filter(r=>(r.consultant===c||r.consultoraNome===c)).reduce((s,r)=>s+(r.summary?.val||0),0));
   if(chMat)chMat.destroy();
   chMat=new Chart(gid('ch-mat'),{type:'bar',data:{labels:sn,datasets:[{data:matByC,backgroundColor:gold,borderRadius:6,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#777',font:{size:10}},grid:{color:'#1C1C1C'}},y:{ticks:{color:'#777'},grid:{color:'#1C1C1C'}}}}});
   if(chUni)chUni.destroy();
@@ -769,7 +780,7 @@ async function renderDashboard() {
       <div class="rank-bar-wrap"><div class="rank-bar" style="width:${r.m/maxM*100}%"></div></div>
       <div style="text-align:right;min-width:52px"><div class="rank-val">${r.m}</div><div style="font-size:10px;color:var(--muted)">R$${Math.round(r.v).toLocaleString('pt-BR')}</div></div>
     </div>`).join('');
-  const convByC=cons.map(c=>{const sub=list.filter(r=>r.consultant===c);const m=sub.reduce((s,r)=>s+(r.summary?.mat||0),0);const l=sub.reduce((s,r)=>s+(r.summary?.lr||0),0);return l>0?parseFloat((m/l*100).toFixed(1)):0;});
+  const convByC=cons.map(c=>{const sub=list.filter(r=>(r.consultant===c||r.consultoraNome===c));const m=sub.reduce((s,r)=>s+(r.summary?.mat||0),0);const l=sub.reduce((s,r)=>s+(r.summary?.lr||0),0);return l>0?parseFloat((m/l*100).toFixed(1)):0;});
   if(chConv)chConv.destroy();
   chConv=new Chart(gid('ch-conv'),{type:'bar',data:{labels:sn,datasets:[{data:convByC,backgroundColor:'#F0C040',borderRadius:6,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{ticks:{color:'#777',font:{size:10}},grid:{color:'#1C1C1C'}},y:{ticks:{color:'#777',callback:v=>v+'%'},grid:{color:'#1C1C1C'}}}}});
 }
@@ -853,8 +864,8 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   // History filters
-  gid('hf-cons').addEventListener('change', renderHistList);
-  gid('hf-month').addEventListener('change', renderHistList);
+  gid('hf-cons').addEventListener('change', ()=>renderHistList());
+  gid('hf-month').addEventListener('change', ()=>renderHistList());
 
   // Dashboard period
   ['all','month','week'].forEach(p => {
@@ -876,8 +887,8 @@ window.addEventListener('DOMContentLoaded', () => {
     gid('t-reps').classList.add('active'); gid('t-pass').classList.remove('active');
     renderAdminReps();
   });
-  gid('af-cons').addEventListener('change', renderAdminReps);
-  gid('af-month').addEventListener('change', renderAdminReps);
+  gid('af-cons').addEventListener('change', ()=>renderAdminReps());
+  gid('af-month').addEventListener('change', ()=>renderAdminReps());
   gid('btn-admin-back').addEventListener('click', () => showScreen('dash'));
 
   // Modals
